@@ -1,17 +1,12 @@
 import unittest
 
 import logging
-from datetime import datetime
 
 from search_tickets.search_module import TrainTickets
+from tests.golden_values import *
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-THIS_DAY = datetime.now().day
-THIS_MONTH = datetime.now().month
-THIS_YEAR = datetime.now().year
-GOLDEN_DATE = ':'.join(['{0:02d}'.format(THIS_DAY), '{0:02d}'.format(THIS_MONTH), str(THIS_YEAR)])
 
 
 class TestTrainTickets(unittest.TestCase):
@@ -43,10 +38,29 @@ class TestTrainTickets(unittest.TestCase):
             train.validate('Киев', 'Одесса', 1, 3)
             self.assertTrue('Указанная дата ведет в прошлое' in str(context.exception))
 
-
         just_date = train.validate('киев', 'одесса', datetime.now().day)
         self.assertEqual(just_date, ('Киев', 'Одесса', GOLDEN_DATE))
 
+
+    # @patch()
+    # def test_search_for_station_id(self):
+
+
+def mocked_requests_get(*args, **kwargs):
+    class MockResponse:
+        def __init__(self, json_data, status_code):
+            self.json_data = json_data
+            self.status_code = status_code
+
+        def json(self):
+            return self.json_data
+
+    if args[0] == 'http://someurl.com/test.json':
+        return MockResponse({"key1": "value1"}, 200)
+    elif args[0] == 'http://someotherurl.com/anothertest.json':
+        return MockResponse({"key2": "value2"}, 200)
+
+    return MockResponse(None, 404)
 
 if __name__ == '__main__':
     unittest.main()

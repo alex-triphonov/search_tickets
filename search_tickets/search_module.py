@@ -1,14 +1,16 @@
 import json
 import logging
-
 import re
 from calendar import monthrange
 from datetime import datetime
-from pprint import pprint
 
 import requests
 
-logging.basicConfig(level=logging.INFO)
+from telegram_modules.send_msg import TelegramMsg
+
+logging.getLogger("requests").setLevel(logging.WARNING)
+LOG_FORMAT = '%(asctime)s %(levelname)-10s %(name)-16s %(funcName)-20s <%(lineno)-3d> %(message)s'
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
@@ -22,32 +24,100 @@ class TrainTickets:
         :param year: int(), default = current year
         """
         self.session = requests.Session()
+        self.telegram = TelegramMsg()
         self.uz_url = 'https://booking.uz.gov.ua/ru/train_search/'
         self.departure, self.destination, self.date = self.validate(departure, destination, day, month, year)
+        self.departure_id = self.search_for_station_id(self.departure)
+        self.destination_id = self.search_for_station_id(self.destination)
 
     def find_tickets(self):
         logger.info('searching for tickets from "{}" to "{}" on {}'.format(self.departure, self.destination, self.date))
         available_trains = []
-        departure_id = self.search_for_station_id(self.departure)
-        destination_id = self.search_for_station_id(self.destination)
-        data = {'from': departure_id,
-                'to': destination_id,
+        train_route = '{}-{}'.format(self.departure, self.destination)
+        search_time = datetime.strptime(self.date, '%Y-%m-%d').strftime('%d-%m-%Y')
+
+        data = {'from': self.departure_id,
+                'to': self.destination_id,
                 'date': self.date
                 }
         response = self.session.post(self.uz_url, data=data)
-        response_dict = json.loads(response.text)['data']
+        response_dict = json.loads(response.text)
         try:
-            logger.warning(response_dict['warning'])
+            logger.info(response_dict['data']['warning'])
+        except TypeError:
+            logger.warning(response_dict['data'])
         except KeyError:
-            for train in response_dict['list']:
+            for train in response_dict['data']['list']:
                 if train['types']:
+                    prices = self.get_price(train['num'], train['types'][0]['id'])
                     available_trains.append({'train_num': train['num'],
                                              'dep_time': train['from']['time'],
                                              'arr_time': train['to']['time'],
                                              'travel_time': train['travelTime'],
-                                             'seats': train['types']
+                                             'seats': self.form_seats_info(train['types'], prices)
                                              })
+            self.telegram.send_available_trains(available_trains, route=train_route, time=search_time)
         return available_trains
+
+    def book_tickets(self, target_train=None, target_type=None, amount=1):
+        """
+        :param target_train: str() - specific train id to search
+        :param target_type: list() - type of coaches you want to find (п,к,л,с1,с2)
+        :param amount: int() - amount of tickets
+        :return:
+        """
+        pass
+    #     form_data = {'roundtrip':0
+        # 'places[0][ord]': '0',
+        # 'places[0][from]': depart_id,
+        # 'places[0][to]': dest_id,
+        # 'places[0][train]': train_num,
+        # 'places[0][date]':'2018-05-16',
+        # 'places[0][wagon_num]': wagon_num
+        # 'places[0][wagon_class]': wagon_class
+        # 'places[0][wagon_type]':П
+        # 'places[0][wagon_railway]':40
+        # 'places[0][charline]':А
+        # 'places[0][firstname]':Артем
+        # 'places[0][lastname]':черный
+        # 'places[0][bedding]':1
+        # 'places[0][services][]':Ш
+        # 'places[0][child]':
+        # 'places[0][student]':
+        # 'places[0][reserve]':0
+        # 'places[0][place_num]':037}
+
+    def search_for_station_id(self, station):
+        search_url = 'https://booking.uz.gov.ua/ru/train_search/station/?term={}'.format(station)
+        response = json.loads(self.session.get(search_url).text)
+        for region in response:
+            if region['title'] == station:
+                return region['value']
+
+    def get_price(self, train_id, wagon_type_id='П'):
+        """
+        :param train_id: str() e.g. '148К'
+        :param wagon_type_id: str(),
+        :return: dict() - prices for different types of coaches
+        """
+        price_url = 'https://booking.uz.gov.ua/ru/train_wagons/'
+        form_data = {
+            'from': self.departure_id,
+            'to': self.destination_id,
+            'date': self.date,
+            'train': train_id,
+            'wagon_type_id': wagon_type_id,
+            'get_tpl': 1
+        }
+        response = self.session.post(price_url, data=form_data)
+        data = json.loads(response.text)
+        prices = {}
+        for coach in data['data']['types']:
+            cost = str(coach['cost'])
+            prices[coach['title']] = float('{}.{}'.format(cost[:len(cost)-2], cost[len(cost)-2:]))
+        logger.debug(prices)
+
+        return prices
 
     @staticmethod
     def validate(departure, destination, day, month=None, year=None):
@@ -91,14 +161,15 @@ class TrainTickets:
         return departure, destination, date
 
     @staticmethod
-    def search_for_station_id(station):
-        search_url = 'https://booking.uz.gov.ua/ru/train_search/station/?term={}'.format(station)
-        response = json.loads(requests.get(search_url).text)
-        for region in response:
-            if region['title'] == station:
-                return region['value']
+    def form_seats_info(coach_types, prices):
+        seats_info = []
+        for ctype in coach_types:
+            string = '{}: {} шт. {} грн'.format(ctype['title'], str(ctype['places']), prices[ctype['title']])
+            seats_info.append(string)
+        logger.debug(seats_info)
 
+        return seats_info
 
 if __name__ == '__main__':
-    a = TrainTickets('киев', 'одесса', 27, 4)
-    pprint(a.find_tickets())
+    a = TrainTickets('киев', 'одесса', 18, 5)
+    a.find_tickets()
