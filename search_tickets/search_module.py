@@ -1,19 +1,19 @@
 import json
 import logging
+import random
 import re
 from calendar import monthrange
 from datetime import datetime
 
 import requests
-from requests.exceptions import SSLError
-from urllib3.exceptions import MaxRetryError
+from requests.exceptions import ConnectionError
 
-from search_tickets.get_proxy import get_proxies
+from search_tickets.get_proxy import get_proxies, usr_agent
 from telegram_modules.send_msg import TelegramMsg
 
 logging.getLogger("requests").setLevel(logging.WARNING)
 LOG_FORMAT = '%(asctime)s %(levelname)-10s %(name)-16s %(funcName)-20s <%(lineno)-3d> %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT, datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 
@@ -71,7 +71,8 @@ class TrainTickets:
                                 # if specific coach types specified
                                 if self.coach_types is None or current_type.lower() in self.coach_types:
                                     try:
-                                        logger.debug('get price for train {}, type {}'.format(train['num'], current_type))
+                                        logger.debug('get price for train {}, type {}'.format(train['num'],
+                                                                                              current_type))
                                         prices = self.get_price(train['num'], current_type)
                                         available_trains.append({'train_num': current_train_id,
                                                                  'dep_time': train['from']['time'],
@@ -151,14 +152,16 @@ class TrainTickets:
         return prices
 
     def set_session_proxy(self):
-        logger.info('Preparing for search..')
+        logger.info('Setting proxy..')
         proxy_list = get_proxies()
         for proxy in proxy_list:
             try:
                 self.session.proxies = {'https': proxy}
+                self.session.headers.update({'User-Agent': usr_agent[random.randint(0, 4)],
+                                             'Host': 'booking.uz.gov.ua'})
                 self.session.get('https://booking.uz.gov.ua/ru/')
                 break
-            except (SSLError, MaxRetryError):
+            except ConnectionError:
                 logger.debug('This proxy suck, try another')
                 pass
 
