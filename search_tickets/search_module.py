@@ -5,7 +5,10 @@ from calendar import monthrange
 from datetime import datetime
 
 import requests
+from requests.exceptions import SSLError
+from urllib3.exceptions import MaxRetryError
 
+from search_tickets.get_proxy import get_proxies
 from telegram_modules.send_msg import TelegramMsg
 
 logging.getLogger("requests").setLevel(logging.WARNING)
@@ -15,20 +18,27 @@ logger = logging.getLogger(__name__)
 
 
 class TrainTickets:
-    def __init__(self, departure, destination, day, month=None, year=None):
+    def __init__(self, departure, destination, day, month=None, year=None, types=None, spec=None, exclude=None):
         """
         :param departure: str()
         :param destination: str()
         :param day: int()
         :param month: int(), default = current month
         :param year: int(), default = current year
+        :param types: list() of types of coaches to search
+        :param spec: list() of specific trains to search
+        :param exclude: list() of trains exclude from search
         """
         self.session = requests.Session()
+        self.set_session_proxy()
         self.telegram = TelegramMsg()
         self.uz_url = 'https://booking.uz.gov.ua/ru/train_search/'
         self.departure, self.destination, self.date = self.validate(departure, destination, day, month, year)
         self.departure_id = self.search_for_station_id(self.departure)
         self.destination_id = self.search_for_station_id(self.destination)
+        self.coach_types = types
+        self.specific_train = spec
+        self.exclude_train = exclude
 
     def find_tickets(self):
         logger.info('searching for tickets from "{}" to "{}" on {}'.format(self.departure, self.destination, self.date))
@@ -42,21 +52,41 @@ class TrainTickets:
                 }
         response = self.session.post(self.uz_url, data=data)
         response_dict = json.loads(response.text)
+        logger.debug(response_dict)
         try:
             logger.info(response_dict['data']['warning'])
         except TypeError:
             logger.warning(response_dict['data'])
         except KeyError:
             for train in response_dict['data']['list']:
+                logger.debug(train)
                 if train['types']:
-                    prices = self.get_price(train['num'], train['types'][0]['id'])
-                    available_trains.append({'train_num': train['num'],
-                                             'dep_time': train['from']['time'],
-                                             'arr_time': train['to']['time'],
-                                             'travel_time': train['travelTime'],
-                                             'seats': self.form_seats_info(train['types'], prices)
-                                             })
-            self.telegram.send_available_trains(available_trains, route=train_route, time=search_time)
+                    for ttype in train['types']:
+                        current_type = ttype['id']
+                        current_train_id = train['num']
+                        # if searching for tickets on specific train id:
+                        if self.specific_train is None or current_train_id in self.specific_train:
+                            # if user exclude specific train
+                            if self.exclude_train is None or current_train_id not in self.exclude_train:
+                                # if specific coach types specified
+                                if self.coach_types is None or current_type.lower() in self.coach_types:
+                                    try:
+                                        logger.debug('get price for train {}, type {}'.format(train['num'], current_type))
+                                        prices = self.get_price(train['num'], current_type)
+                                        available_trains.append({'train_num': current_train_id,
+                                                                 'dep_time': train['from']['time'],
+                                                                 'arr_time': train['to']['time'],
+                                                                 'travel_time': train['travelTime'],
+                                                                 'seats': self.form_seats_info(train['types'], prices)
+                                                                 })
+                                    except TypeError:
+                                        continue
+
+            if available_trains:
+                self.telegram.send_available_trains(available_trains, route=train_route, time=search_time)
+            else:
+                logger.info('Нет мест с заданными Вами характеристикам')
+
         return available_trains
 
     def book_tickets(self, target_train=None, target_type=None, amount=1):
@@ -94,7 +124,7 @@ class TrainTickets:
             if region['title'] == station:
                 return region['value']
 
-    def get_price(self, train_id, wagon_type_id='П'):
+    def get_price(self, train_id, wagon_type_id):
         """
         :param train_id: str() e.g. '148К'
         :param wagon_type_id: str(),
@@ -107,10 +137,11 @@ class TrainTickets:
             'date': self.date,
             'train': train_id,
             'wagon_type_id': wagon_type_id,
-            'get_tpl': 1
+            # 'get_tpl': 1
         }
         response = self.session.post(price_url, data=form_data)
         data = json.loads(response.text)
+        logger.debug(data)
         prices = {}
         for coach in data['data']['types']:
             cost = str(coach['cost'])
@@ -118,6 +149,18 @@ class TrainTickets:
         logger.debug(prices)
 
         return prices
+
+    def set_session_proxy(self):
+        logger.info('Preparing for search..')
+        proxy_list = get_proxies()
+        for proxy in proxy_list:
+            try:
+                self.session.proxies = {'https': proxy}
+                self.session.get('https://booking.uz.gov.ua/ru/')
+                break
+            except (SSLError, MaxRetryError):
+                logger.debug('This proxy suck, try another')
+                pass
 
     @staticmethod
     def validate(departure, destination, day, month=None, year=None):
@@ -171,5 +214,4 @@ class TrainTickets:
         return seats_info
 
 if __name__ == '__main__':
-    a = TrainTickets('киев', 'одесса', 18, 5)
-    a.find_tickets()
+    pass

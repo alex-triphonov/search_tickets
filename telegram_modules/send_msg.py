@@ -13,7 +13,7 @@ class TelegramMsg:
         )
 
     def send_available_trains(self, available_trains, route, time):
-        tickets_data = ['— Поезд № {}, отправление в {}, прибытие в {}, билеты в наличии: {}'.format(
+        tickets_data = ['— Поезд № {}, отправление в {}, прибытие в {}, билеты в наличии: {}\n'.format(
             train['train_num'], train['dep_time'], train['arr_time'],
             ', '.join(train['seats'])
         ) for train in available_trains]
